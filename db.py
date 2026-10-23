@@ -5,12 +5,6 @@ DB_NAME = "bookings.db"
 
 
 def init_db():
-    if os.path.exists(DB_NAME):
-        try:
-            os.remove(DB_NAME)
-        except:
-            pass
-
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
 
