@@ -1,7 +1,9 @@
 import sqlite3
 import os
 
-DB_NAME = "bookings.db"
+DB_DIR = os.getenv("DB_DIR", "data")
+os.makedirs(DB_DIR, exist_ok=True)
+DB_NAME = os.path.join(DB_DIR, "bookings.db")
 
 
 def init_db():
@@ -57,9 +59,7 @@ def init_db():
     conn.close()
 
 
-# --- АНТИСПАМ ---
 def has_active_booking(user_id):
-    """Проверяет, есть ли у пользователя активная заявка (new или confirmed)"""
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
     cur.execute("SELECT id FROM bookings WHERE user_id = ? AND status IN ('new', 'confirmed')", (user_id,))

@@ -3,9 +3,12 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta
+from html import escape as html_escape
+
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -33,11 +36,12 @@ from keyboards import (
     get_main_reply_kb, get_admin_main_reply_kb
 )
 
+logging.basicConfig(level=logging.INFO)
+
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
-logging.basicConfig(level=logging.INFO)
 dp = Dispatcher(storage=MemoryStorage())
 geolocator = Nominatim(user_agent="makeup_booking_bot_v2")
 
@@ -72,12 +76,12 @@ async def send_clean_msg(message: Message, state: FSMContext, text: str, reply_m
     if isinstance(message, Message):
         try:
             await message.delete()
-        except:
+        except Exception:
             pass
     if old_bot_msg_id:
         try:
             await message.bot.delete_message(chat_id=message.chat.id, message_id=old_bot_msg_id)
-        except:
+        except Exception:
             pass
     msg = await message.bot.send_message(chat_id=message.chat.id, text=text, reply_markup=reply_markup)
     await state.update_data(last_bot_msg=msg.message_id)
@@ -101,10 +105,8 @@ def check_address(address_str: str):
             return False, "Укажите более точный адрес (улицу и дом)."
         return True, ""
     except Exception as e:
-        print(f"Ошибка геокодера: {e}")
+        logging.error(f"Ошибка геокодера: {e}")
         return True, ""
-
-    # ==================== ГЛАВНЫЙ СТАРТ ====================
 
 
 @dp.message(CommandStart())
@@ -112,7 +114,7 @@ async def start_handler(message: Message, state: FSMContext):
     await state.clear()
     try:
         await message.delete()
-    except:
+    except Exception:
         pass
 
     text = "Здравствуйте! Это бот визажиста.\nДля записи нажмите кнопку ниже."
@@ -123,14 +125,12 @@ async def start_handler(message: Message, state: FSMContext):
         await message.answer(text, reply_markup=get_main_reply_kb())
 
 
-# ==================== АДМИН ПАНЕЛЬ ====================
-
 @dp.message(F.text == "📋 Меню", F.from_user.id == ADMIN_ID)
 async def admin_panel_handler(message: Message, state: FSMContext):
-    await state.clear()  # Сбрасываем состояние, если админ был в середине заполнения
+    await state.clear()
     try:
         await message.delete()
-    except:
+    except Exception:
         pass
     await message.answer("⚙️ <b>Главное меню</b>\nВыберите действие:",
                          reply_markup=get_admin_panel_kb(), parse_mode="HTML")
@@ -143,7 +143,6 @@ async def admin_back_to_menu(call: CallbackQuery, state: FSMContext):
                                  reply_markup=get_admin_panel_kb(), parse_mode="HTML")
 
 
-# --- СПИСКИ ЗАКАЗОВ ---
 @dp.callback_query(F.data == "adm_new")
 async def admin_new(call: CallbackQuery):
     all_active = get_active_bookings()
@@ -228,23 +227,32 @@ async def admin_view_order(call: CallbackQuery, state: FSMContext):
         f"📄 <b>Заявка №{order_id}</b>\n"
         f"Статус: {status_rus}\n\n"
         f"<blockquote>"
-        f"👤 Клиент: @{username or 'нет'} (ID: {user_id})\n"
-        f"📅 Время: {dt_str}\n"
-        f"📍 Формат: {fmt} ({addr})\n"
+        f"👤 Клиент: @{html_escape(username or 'нет')} (ID: {user_id})\n"
+        f"📅 Время: {html_escape(dt_str or '')}\n"
+        f"📍 Формат: {html_escape(fmt or '')} ({html_escape(addr or '')})\n"
         f"👥 Человек: {persons}\n"
-        f"💬 Особенности: {notes}\n"
-        f"💰 Оплата: {payment}\n"
-        f"📞 Контакт: {contact}"
+        f"💬 Особенности: {html_escape(notes or '')}\n"
+        f"💰 Оплата: {html_escape(payment or '')}\n"
+        f"📞 Контакт: {html_escape(contact or '')}"
         f"</blockquote>"
     )
 
     kb = get_admin_order_kb(order_id, user_id)
     if status in ["done", "cancelled"]:
         kb = get_admin_back_kb()
-    await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+    try:
+        if call.message.photo:
+            await call.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
+        elif call.message.text:
+            await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        else:
+            await call.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    except TelegramBadRequest as e:
+        logging.error(f"Не удалось обновить карточку заявки №{order_id}: {e}")
+        await call.message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
-# --- ОТЗЫВЫ ---
 @dp.callback_query(F.data == "adm_reviews")
 async def admin_reviews(call: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -258,17 +266,17 @@ async def admin_reviews(call: CallbackQuery, state: FSMContext):
 
     for r in reviews[:20]:
         order_id, user_id, username, rating, text, photo_id = r
-        review_text = f"⭐ Оценка: <b>{rating}/5</b>\nКлиент: @{username or user_id}\nЗаказ: №{order_id}\n\n💬 {text or 'Без текста'}"
+        review_text = f"⭐ Оценка: <b>{rating}/5</b>\nКлиент: @{html_escape(username or str(user_id))}\nЗаказ: №{order_id}\n\n💬 {html_escape(text or 'Без текста')}"
         if photo_id:
             await call.message.answer_photo(photo_id, caption=review_text, parse_mode="HTML")
         else:
             await call.message.answer(review_text, parse_mode="HTML")
 
 
-# --- УПРАВЛЕНИЕ ЗАКАЗОМ (АДМИН) ---
 @dp.callback_query(F.data.startswith("adm_confirmed_"))
 async def admin_confirm(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return await call.answer("Нет прав", show_alert=True)
+    if call.from_user.id != ADMIN_ID:
+        return await call.answer("Нет прав", show_alert=True)
     await state.clear()
     order_id = int(call.data.split("_")[2])
     update_status(order_id, "confirmed")
@@ -279,8 +287,8 @@ async def admin_confirm(call: CallbackQuery, state: FSMContext):
         confirm_text = f"✅ Ваша заявка №{order_id} на {dt_str} подтверждена!\n\nДля связи с мастером:\n👤 @Astra_nil\n📞 +375447211659\n\nЖду вас!"
         try:
             await call.bot.send_message(client_id, confirm_text)
-        except:
-            pass
+        except Exception as e:
+            logging.error(f"Не удалось уведомить клиента {client_id} по заявке №{order_id}: {e}")
 
     await call.answer("Заказ подтвержден!")
     await admin_view_order(call, state)
@@ -288,7 +296,8 @@ async def admin_confirm(call: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("adm_done_"))
 async def admin_done(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return await call.answer("Нет прав", show_alert=True)
+    if call.from_user.id != ADMIN_ID:
+        return await call.answer("Нет прав", show_alert=True)
     await state.clear()
     order_id = int(call.data.split("_")[2])
     update_status(order_id, "done")
@@ -300,15 +309,16 @@ async def admin_done(call: CallbackQuery, state: FSMContext):
             await call.bot.send_message(client_id, f"✔️ Заявка №{order_id} выполнена. Спасибо!")
             await call.bot.send_message(client_id, "Пожалуйста, оцените мою работу от 1 до 5 ⭐:",
                                         reply_markup=get_review_rating_kb(order_id))
-        except:
-            pass
+        except Exception as e:
+            logging.error(f"Не удалось уведомить клиента {client_id} по заявке №{order_id}: {e}")
     await call.answer("Заказ выполнен! Клиенту отправлен запрос на отзыв.")
     await admin_view_order(call, state)
 
 
 @dp.callback_query(F.data.startswith("adm_cancelled_"))
 async def admin_cancel_start(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID: return await call.answer("Нет прав", show_alert=True)
+    if call.from_user.id != ADMIN_ID:
+        return await call.answer("Нет прав", show_alert=True)
     order_id = int(call.data.split("_")[2])
     await state.update_data(cancel_order_id=order_id)
     await state.set_state(AdminCancel.waiting_choice)
@@ -341,8 +351,8 @@ async def process_cancel_choice_skip(message: Message, state: FSMContext):
             await message.bot.send_message(client_id,
                                            f"❌ Ваша заявка №{order_id} на {dt_str} отклонена.\nЕсли хотите перенести, нажмите кнопку внизу.",
                                            reply_markup=get_main_reply_kb())
-        except:
-            pass
+        except Exception as e:
+            logging.error(f"Не удалось уведомить клиента {client_id} по заявке №{order_id}: {e}")
     await message.answer(f"Заявка №{order_id} отменена без причины.", reply_markup=get_admin_main_reply_kb())
     await admin_panel_handler(message, state)
 
@@ -351,7 +361,7 @@ async def process_cancel_choice_skip(message: Message, state: FSMContext):
 async def admin_cancel_with_reason(message: Message, state: FSMContext):
     data = await state.get_data()
     order_id = data.get('cancel_order_id')
-    reason = message.text
+    reason = message.text or ""
     update_status(order_id, "cancelled")
     save_cancel_reason(order_id, reason)
     await state.clear()
@@ -363,13 +373,12 @@ async def admin_cancel_with_reason(message: Message, state: FSMContext):
             await message.bot.send_message(client_id,
                                            f"❌ Ваша заявка №{order_id} на {dt_str} отклонена.\nПричина: {reason}\nЕсли хотите перенести, нажмите кнопку внизу.",
                                            reply_markup=get_main_reply_kb())
-        except:
-            pass
+        except Exception as e:
+            logging.error(f"Не удалось уведомить клиента {client_id} по заявке №{order_id}: {e}")
     await message.answer(f"Заявка №{order_id} отменена. Причина: {reason}", reply_markup=get_admin_main_reply_kb())
     await admin_panel_handler(message, state)
 
 
-# --- НАСТРОЙКА ГРАФИКА ---
 @dp.callback_query(F.data == "adm_schedule")
 async def admin_schedule(call: CallbackQuery):
     work_days = get_work_days()
@@ -404,7 +413,8 @@ async def admin_sched_end(call: CallbackQuery, state: FSMContext):
     day, hour = int(parts[3]), int(parts[4])
     data = await state.get_data()
     start_h = data.get("sched_start")
-    if hour <= start_h: return await call.answer("Ошибка: конец смены должен быть позже начала!", show_alert=True)
+    if hour <= start_h:
+        return await call.answer("Ошибка: конец смены должен быть позже начала!", show_alert=True)
     update_schedule(day, start_h, hour)
     await call.message.edit_text(f"✅ График обновлен! Смена: с {start_h}:00 до {hour}:00.",
                                  reply_markup=get_admin_schedule_kb())
@@ -439,13 +449,10 @@ async def admin_toggle_block(call: CallbackQuery):
                                  reply_markup=get_admin_block_days_kb(offset))
 
 
-# ==================== КЛИЕНТСКАЯ ЧАСТЬ ====================
-
 @dp.message(F.text == "✨ Записаться на макияж")
 async def book_handler(message: Message, state: FSMContext):
-    await state.clear()  # Сбрасываем старое состояние, если было
+    await state.clear()
 
-    # АНТИСПАМ
     if has_active_booking(message.from_user.id):
         return await message.answer(
             "❌ У вас уже есть активная заявка. \n\n"
@@ -499,9 +506,10 @@ async def process_format(message: Message, state: FSMContext):
 async def process_location(message: Message, state: FSMContext):
     lat, lon = message.location.latitude, message.location.longitude
     try:
-        location = geolocator.reverse(f"{lat}, {lon}", timeout=10, language="ru")
+        location = await asyncio.to_thread(geolocator.reverse, f"{lat}, {lon}", timeout=10, language="ru")
         address_text = location.address if location else f"Геолокация: {lat}, {lon}"
-    except:
+    except Exception as e:
+        logging.error(f"Ошибка обратного геокодера: {e}")
         address_text = f"Геолокация: {lat}, {lon}"
     await state.update_data(format="Свое место", address=address_text)
     await state.set_state(Booking.persons)
@@ -517,14 +525,17 @@ async def process_address_manual(message: Message, state: FSMContext):
 
 @dp.message(Booking.address_text)
 async def process_address_text(message: Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("Напишите ваш адрес текстом.")
     address_input = message.text.strip()
     wait_msg = await message.bot.send_message(message.chat.id, "🔍 Проверяю адрес в Беларуси...")
-    is_valid, error_msg = check_address(address_input)
+    is_valid, error_msg = await asyncio.to_thread(check_address, address_input)
     try:
         await wait_msg.delete()
-    except:
+    except Exception:
         pass
-    if not is_valid: return await send_clean_msg(message, state, f"❌ {error_msg}\n\nНапишите точный адрес:")
+    if not is_valid:
+        return await send_clean_msg(message, state, f"❌ {error_msg}\n\nНапишите точный адрес:")
     await state.update_data(address=address_input)
     await state.set_state(Booking.persons)
     await send_clean_msg(message, state, "✅ Адрес подтвержден!\nСколько человек?")
@@ -532,7 +543,8 @@ async def process_address_text(message: Message, state: FSMContext):
 
 @dp.message(Booking.persons)
 async def process_persons(message: Message, state: FSMContext):
-    if not message.text.isdigit(): return await message.answer("Пожалуйста, напишите число.")
+    if not message.text or not message.text.isdigit():
+        return await message.answer("Пожалуйста, напишите число.")
     await state.update_data(persons=int(message.text))
     await state.set_state(Booking.reference)
     await send_clean_msg(message, state, "Пришлите фото-референс или нажмите внизу:", reply_markup=get_skip_reply_kb())
@@ -561,6 +573,8 @@ async def skip_notes(message: Message, state: FSMContext):
 
 @dp.message(Booking.notes)
 async def process_notes(message: Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("Напишите текстом или нажмите «Пропустить».")
     await state.update_data(notes=message.text)
     await state.set_state(Booking.payment)
     await send_clean_msg(message, state, "Как вам удобнее оплатить?", reply_markup=get_payment_reply_kb())
@@ -576,10 +590,11 @@ async def process_payment(message: Message, state: FSMContext):
 @dp.message(Booking.contact, F.contact)
 async def process_contact_telegram(message: Message, state: FSMContext):
     phone = message.contact.phone_number
-    if not phone.startswith('+'): phone = '+' + phone
+    if not phone.startswith('+'):
+        phone = '+' + phone
     pattern = r"^(?:\+375|80)\d{9}$"
-    if not re.match(pattern, phone): return await message.answer(
-        "❌ Номер из Telegram не подходит (+375... или 80...). Введите вручную:")
+    if not re.match(pattern, phone):
+        return await message.answer("❌ Номер из Telegram не подходит (+375... или 80...). Введите вручную:")
     await state.update_data(contact=phone)
     await state.set_state(Booking.confirm)
     data = await state.get_data()
@@ -589,9 +604,12 @@ async def process_contact_telegram(message: Message, state: FSMContext):
 
 @dp.message(Booking.contact)
 async def process_contact_text(message: Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("Отправьте номер текстом или нажмите кнопку ниже.")
     contact_text = message.text.strip()
     pattern = r"^(?:\+375|80)\d{9}$"
-    if not re.match(pattern, contact_text): return await message.answer("❌ Ошибка. Пример: +375291234567")
+    if not re.match(pattern, contact_text):
+        return await message.answer("❌ Ошибка. Пример: +375291234567")
     await state.update_data(contact=contact_text)
     await state.set_state(Booking.confirm)
     data = await state.get_data()
@@ -616,6 +634,7 @@ async def confirm_booking(message: Message, state: FSMContext):
                                 data['persons'], data.get('reference_file_id'), data['notes'], data['contact'],
                                 data['payment'])
     except Exception as e:
+        logging.error(f"Ошибка при создании заявки: {e}")
         return await message.answer(f"Ошибка при создании заявки: {e}")
 
     await state.clear()
@@ -628,14 +647,14 @@ async def confirm_booking(message: Message, state: FSMContext):
 
     try:
         if data.get('reference_file_id'):
-            await message.bot.send_photo(ADMIN_ID, data['reference_file_id'], caption=admin_text, reply_markup=kb_admin)
+            await message.bot.send_photo(ADMIN_ID, data['reference_file_id'], caption=admin_text,
+                                         reply_markup=kb_admin)
         else:
             await message.bot.send_message(ADMIN_ID, admin_text, reply_markup=kb_admin)
-    except:
-        pass
+    except Exception as e:
+        logging.error(f"Не удалось уведомить админа о заявке №{order_id}: {e}")
 
 
-# --- ОТЗЫВЫ КЛИЕНТА ---
 @dp.callback_query(F.data.startswith("rate_"))
 async def process_review_rating(call: CallbackQuery, state: FSMContext):
     _, rating, order_id = call.data.split("_")
@@ -656,8 +675,8 @@ async def process_review_write(message: Message, state: FSMContext):
 @dp.message(Review.waiting_choice, F.text == "⏭ Пропустить")
 async def process_review_skip(message: Message, state: FSMContext):
     data = await state.get_data()
-    save_review(data['review_order_id'], message.from_user.id, message.from_user.username, data['review_rating'], None,
-                None)
+    save_review(data['review_order_id'], message.from_user.id, message.from_user.username, data['review_rating'],
+                None, None)
     await state.clear()
     kb = get_admin_main_reply_kb() if message.from_user.id == ADMIN_ID else get_main_reply_kb()
     await send_clean_msg(message, state, "Спасибо за вашу оценку! Будем рады видеть вас снова.", reply_markup=kb)

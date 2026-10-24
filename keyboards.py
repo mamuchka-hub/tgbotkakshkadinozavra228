@@ -75,7 +75,6 @@ def get_format_reply_kb():
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 
-# НОВАЯ КЛАВИАТУРА КОЛИЧЕСТВА ЧЕЛОВЕК
 def get_persons_reply_kb():
     kb = [
         [KeyboardButton(text="1"), KeyboardButton(text="2"), KeyboardButton(text="3")],
@@ -139,7 +138,7 @@ def get_admin_panel_kb():
         [InlineKeyboardButton(text="⭐ Отзывы", callback_data="adm_reviews")],
         [InlineKeyboardButton(text="⏰ Настроить график", callback_data="adm_schedule")],
         [InlineKeyboardButton(text="🚫 Закрыть/Открыть день", callback_data="adm_block_menu")],
-        [InlineKeyboardButton(text="⛔ Черный список", callback_data="adm_blacklist")]  # НОВАЯ КНОПКА
+        [InlineKeyboardButton(text="⛔ Черный список", callback_data="adm_blacklist")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
