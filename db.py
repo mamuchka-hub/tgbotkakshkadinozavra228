@@ -53,50 +53,13 @@ def init_db():
         )
     """)
 
-    # НОВАЯ ТАБЛИЦА ЧС
-    cur.execute("CREATE TABLE IF NOT EXISTS blacklist (user_id INTEGER PRIMARY KEY)")
-
     conn.commit()
     conn.close()
-
-
-# --- ФУНКЦИИ ЧС ---
-def add_to_blacklist(user_id):
-    conn = sqlite3.connect(DB_NAME)
-    cur = conn.cursor()
-    cur.execute("INSERT OR IGNORE INTO blacklist (user_id) VALUES (?)", (user_id,))
-    conn.commit()
-    conn.close()
-
-
-def remove_from_blacklist(user_id):
-    conn = sqlite3.connect(DB_NAME)
-    cur = conn.cursor()
-    cur.execute("DELETE FROM blacklist WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
-
-
-def is_blacklisted(user_id):
-    conn = sqlite3.connect(DB_NAME)
-    cur = conn.cursor()
-    cur.execute("SELECT user_id FROM blacklist WHERE user_id = ?", (user_id,))
-    res = cur.fetchone()
-    conn.close()
-    return bool(res)
-
-
-def get_blacklist():
-    conn = sqlite3.connect(DB_NAME)
-    cur = conn.cursor()
-    cur.execute("SELECT user_id FROM blacklist")
-    rows = cur.fetchall()
-    conn.close()
-    return [row[0] for row in rows]
 
 
 # --- АНТИСПАМ ---
 def has_active_booking(user_id):
+    """Проверяет, есть ли у пользователя активная заявка (new или confirmed)"""
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
     cur.execute("SELECT id FROM bookings WHERE user_id = ? AND status IN ('new', 'confirmed')", (user_id,))
