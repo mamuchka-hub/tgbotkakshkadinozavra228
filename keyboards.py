@@ -67,11 +67,19 @@ def get_slots_kb(date_str: str):
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
-# ОБНОВЛЕННЫЕ КНОПКИ ВЫБОРА МЕСТА
 def get_format_reply_kb():
     kb = [
         [KeyboardButton(text="🏢 У мастера")],
         [KeyboardButton(text="🏠 Свое место")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+
+# НОВАЯ КЛАВИАТУРА КОЛИЧЕСТВА ЧЕЛОВЕК
+def get_persons_reply_kb():
+    kb = [
+        [KeyboardButton(text="1"), KeyboardButton(text="2"), KeyboardButton(text="3")],
+        [KeyboardButton(text="4"), KeyboardButton(text="5")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
@@ -130,13 +138,24 @@ def get_admin_panel_kb():
         [InlineKeyboardButton(text="📋 Все активные заказы", callback_data="adm_all")],
         [InlineKeyboardButton(text="⭐ Отзывы", callback_data="adm_reviews")],
         [InlineKeyboardButton(text="⏰ Настроить график", callback_data="adm_schedule")],
-        [InlineKeyboardButton(text="🚫 Закрыть/Открыть день", callback_data="adm_block_menu")]
+        [InlineKeyboardButton(text="🚫 Закрыть/Открыть день", callback_data="adm_block_menu")],
+        [InlineKeyboardButton(text="⛔ Черный список", callback_data="adm_blacklist")]  # НОВАЯ КНОПКА
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 def get_admin_back_kb():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ В меню", callback_data="adm_menu")]])
+
+
+def get_admin_blacklist_kb():
+    kb = [
+        [InlineKeyboardButton(text="➕ Добавить ID в ЧС", callback_data="adm_bl_add")],
+        [InlineKeyboardButton(text="📋 Показать список ЧС", callback_data="adm_bl_view")],
+        [InlineKeyboardButton(text="➖ Удалить ID из ЧС", callback_data="adm_bl_remove")],
+        [InlineKeyboardButton(text="⬅️ В меню", callback_data="adm_menu")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 def get_admin_orders_list_kb(bookings):
