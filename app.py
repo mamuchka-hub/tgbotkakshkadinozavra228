@@ -2,11 +2,10 @@ import asyncio
 import logging
 import os
 import re
-import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
-from aiogram import Bot, Dispatcher, F, BaseMiddleware
+from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -21,8 +20,7 @@ from db import (
     get_work_days, update_schedule, block_day, unblock_day, is_day_blocked,
     get_bookings_for_date, get_active_bookings,
     save_cancel_reason, save_review, get_all_reviews, get_order_details,
-    has_active_booking, add_to_blacklist, remove_from_blacklist,
-    is_blacklisted, get_blacklist
+    has_active_booking
 )
 from keyboards import (
     get_dates_kb, get_slots_kb, get_admin_order_kb,
@@ -32,8 +30,7 @@ from keyboards import (
     get_admin_panel_kb, get_admin_back_kb, get_admin_schedule_kb,
     get_admin_hours_kb, get_admin_block_days_kb, get_review_rating_kb,
     get_admin_orders_list_kb, get_review_choice_kb, get_cancel_choice_kb,
-    get_main_reply_kb, get_admin_main_reply_kb, get_persons_reply_kb,
-    get_admin_blacklist_kb
+    get_main_reply_kb, get_admin_main_reply_kb
 )
 
 load_dotenv()
@@ -43,32 +40,6 @@ ADMIN_ID = int(os.getenv("ADMIN_ID"))
 logging.basicConfig(level=logging.INFO)
 dp = Dispatcher(storage=MemoryStorage())
 geolocator = Nominatim(user_agent="makeup_booking_bot_v2")
-
-
-# --- АНТИСПАМ MIDDLEWARE ---
-class ThrottlingMiddleware(BaseMiddleware):
-    def __init__(self, rate_limit: float = 1.2):
-        self.rate_limit = rate_limit
-        self.users = {}
-
-    async def __call__(self, handler, event, data):
-        user_id = event.from_user.id
-        current_time = time.time()
-
-        if user_id in self.users:
-            last_time = self.users[user_id]
-            if current_time - last_time < self.rate_limit:
-                if isinstance(event, CallbackQuery):
-                    await event.answer("⏳ Пожалуйста, не спамьте кнопками.", show_alert=False)
-                return  # Пропускаем обработку
-
-        self.users[user_id] = current_time
-        return await handler(event, data)
-
-
-# Подключаем антиспам
-dp.callback_query.middleware(ThrottlingMiddleware())
-dp.message.middleware(ThrottlingMiddleware())
 
 
 class Booking(StatesGroup):
@@ -93,11 +64,6 @@ class Review(StatesGroup):
 class AdminCancel(StatesGroup):
     waiting_choice = State()
     waiting_reason = State()
-
-
-class AdminBlacklist(StatesGroup):
-    waiting_add = State()
-    waiting_remove = State()
 
 
 async def send_clean_msg(message: Message, state: FSMContext, text: str, reply_markup=None):
@@ -134,7 +100,8 @@ def check_address(address_str: str):
         if not has_street and not has_house:
             return False, "Укажите более точный адрес (улицу и дом)."
         return True, ""
-    except Exception:
+    except Exception as e:
+        print(f"Ошибка геокодера: {e}")
         return True, ""
 
     # ==================== ГЛАВНЫЙ СТАРТ ====================
@@ -148,9 +115,6 @@ async def start_handler(message: Message, state: FSMContext):
     except:
         pass
 
-    if is_blacklisted(message.from_user.id):
-        return await message.answer("❌ Вы заблокированы и не можете использовать этого бота.")
-
     text = "Здравствуйте! Это бот визажиста.\nДля записи нажмите кнопку ниже."
 
     if message.from_user.id == ADMIN_ID:
@@ -163,7 +127,7 @@ async def start_handler(message: Message, state: FSMContext):
 
 @dp.message(F.text == "📋 Меню", F.from_user.id == ADMIN_ID)
 async def admin_panel_handler(message: Message, state: FSMContext):
-    await state.clear()
+    await state.clear()  # Сбрасываем состояние, если админ был в середине заполнения
     try:
         await message.delete()
     except:
@@ -177,59 +141,6 @@ async def admin_back_to_menu(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await call.message.edit_text("⚙️ <b>Главное меню</b>\nВыберите действие:",
                                  reply_markup=get_admin_panel_kb(), parse_mode="HTML")
-
-
-# --- ЧЕРНЫЙ СПИСОК ---
-@dp.callback_query(F.data == "adm_blacklist")
-async def admin_blacklist_menu(call: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await call.message.edit_text("⛔ <b>Управление Черным списком</b>\nВыберите действие:",
-                                 reply_markup=get_admin_blacklist_kb(), parse_mode="HTML")
-
-
-@dp.callback_query(F.data == "adm_bl_view")
-async def admin_bl_view(call: CallbackQuery):
-    users = get_blacklist()
-    if not users:
-        return await call.message.edit_text("В черном списке пока никого нет.", reply_markup=get_admin_blacklist_kb())
-    text = "⛔ <b>Заблокированные ID:</b>\n\n" + "\n".join([f"<code>{u}</code>" for u in users])
-    await call.message.edit_text(text, reply_markup=get_admin_blacklist_kb(), parse_mode="HTML")
-
-
-@dp.callback_query(F.data == "adm_bl_add")
-async def admin_bl_add_start(call: CallbackQuery, state: FSMContext):
-    await state.set_state(AdminBlacklist.waiting_add)
-    await call.message.edit_text("Введите ID пользователя, которого нужно заблокировать:", reply_markup=remove_kb())
-
-
-@dp.message(AdminBlacklist.waiting_add)
-async def admin_bl_add_process(message: Message, state: FSMContext):
-    try:
-        user_id = int(message.text)
-        add_to_blacklist(user_id)
-        await state.clear()
-        await message.answer(f"✅ Пользователь <code>{user_id}</code> добавлен в ЧС.",
-                             reply_markup=get_admin_blacklist_kb(), parse_mode="HTML")
-    except ValueError:
-        await message.answer("❌ Ошибка. ID должен состоять только из цифр. Попробуйте еще раз.")
-
-
-@dp.callback_query(F.data == "adm_bl_remove")
-async def admin_bl_remove_start(call: CallbackQuery, state: FSMContext):
-    await state.set_state(AdminBlacklist.waiting_remove)
-    await call.message.edit_text("Введите ID пользователя, которого нужно разблокировать:", reply_markup=remove_kb())
-
-
-@dp.message(AdminBlacklist.waiting_remove)
-async def admin_bl_remove_process(message: Message, state: FSMContext):
-    try:
-        user_id = int(message.text)
-        remove_from_blacklist(user_id)
-        await state.clear()
-        await message.answer(f"✅ Пользователь <code>{user_id}</code> удален из ЧС.",
-                             reply_markup=get_admin_blacklist_kb(), parse_mode="HTML")
-    except ValueError:
-        await message.answer("❌ Ошибка. ID должен состоять только из цифр. Попробуйте еще раз.")
 
 
 # --- СПИСКИ ЗАКАЗОВ ---
@@ -532,11 +443,9 @@ async def admin_toggle_block(call: CallbackQuery):
 
 @dp.message(F.text == "✨ Записаться на макияж")
 async def book_handler(message: Message, state: FSMContext):
-    await state.clear()
+    await state.clear()  # Сбрасываем старое состояние, если было
 
-    if is_blacklisted(message.from_user.id):
-        return await message.answer("❌ Вы заблокированы и не можете создавать заявки. Напишите мастеру: @Astra_nil")
-
+    # АНТИСПАМ
     if has_active_booking(message.from_user.id):
         return await message.answer(
             "❌ У вас уже есть активная заявка. \n\n"
@@ -583,7 +492,7 @@ async def process_format(message: Message, state: FSMContext):
     else:
         await state.update_data(format="У мастера", address="Гомель, ул. Чечерская, д. 48, кв. 18")
         await state.set_state(Booking.persons)
-        await send_clean_msg(message, state, "Сколько человек нужно накрасить?", reply_markup=get_persons_reply_kb())
+        await send_clean_msg(message, state, "Сколько человек нужно накрасить? (напишите число)")
 
 
 @dp.message(Booking.address_choice, F.location)
@@ -596,8 +505,7 @@ async def process_location(message: Message, state: FSMContext):
         address_text = f"Геолокация: {lat}, {lon}"
     await state.update_data(format="Свое место", address=address_text)
     await state.set_state(Booking.persons)
-    await send_clean_msg(message, state, f"📍 Адрес: {address_text}\n\nСколько человек нужно накрасить?",
-                         reply_markup=get_persons_reply_kb())
+    await send_clean_msg(message, state, f"📍 Адрес: {address_text}\n\nСколько человек?")
 
 
 @dp.message(Booking.address_choice, F.text == "✏️ Ввести адрес вручную")
@@ -619,13 +527,12 @@ async def process_address_text(message: Message, state: FSMContext):
     if not is_valid: return await send_clean_msg(message, state, f"❌ {error_msg}\n\nНапишите точный адрес:")
     await state.update_data(address=address_input)
     await state.set_state(Booking.persons)
-    await send_clean_msg(message, state, "✅ Адрес подтвержден!\nСколько человек нужно накрасить?",
-                         reply_markup=get_persons_reply_kb())
+    await send_clean_msg(message, state, "✅ Адрес подтвержден!\nСколько человек?")
 
 
-# ОБНОВЛЕННЫЙ ВЫБОР КОЛИЧЕСТВА ЧЕЛОВЕК
-@dp.message(Booking.persons, F.text.in_(["1", "2", "3", "4", "5"]))
+@dp.message(Booking.persons)
 async def process_persons(message: Message, state: FSMContext):
+    if not message.text.isdigit(): return await message.answer("Пожалуйста, напишите число.")
     await state.update_data(persons=int(message.text))
     await state.set_state(Booking.reference)
     await send_clean_msg(message, state, "Пришлите фото-референс или нажмите внизу:", reply_markup=get_skip_reply_kb())
@@ -666,17 +573,13 @@ async def process_payment(message: Message, state: FSMContext):
     await send_clean_msg(message, state, "Оставьте ваш номер телефона:", reply_markup=get_contact_reply_kb())
 
 
-# СТРОГАЯ ПРОВЕРКА НОМЕРА (+375/80 + код оператора 25/29/33/44 + 7 цифр)
 @dp.message(Booking.contact, F.contact)
 async def process_contact_telegram(message: Message, state: FSMContext):
     phone = message.contact.phone_number
     if not phone.startswith('+'): phone = '+' + phone
-
-    pattern = r"^(?:\+375|80)(?:25|29|33|44)\d{7}$"
-    if not re.match(pattern, phone):
-        return await message.answer(
-            "❌ Номер из Telegram не подходит (неверный код оператора). Введите номер вручную (+375291234567):")
-
+    pattern = r"^(?:\+375|80)\d{9}$"
+    if not re.match(pattern, phone): return await message.answer(
+        "❌ Номер из Telegram не подходит (+375... или 80...). Введите вручную:")
     await state.update_data(contact=phone)
     await state.set_state(Booking.confirm)
     data = await state.get_data()
@@ -687,11 +590,8 @@ async def process_contact_telegram(message: Message, state: FSMContext):
 @dp.message(Booking.contact)
 async def process_contact_text(message: Message, state: FSMContext):
     contact_text = message.text.strip()
-    pattern = r"^(?:\+375|80)(?:25|29|33|44)\d{7}$"
-    if not re.match(pattern, contact_text):
-        return await message.answer(
-            "❌ Ошибка. Введите белорусский номер с правильным кодом оператора (25, 29, 33, 44). Пример: +375291234567")
-
+    pattern = r"^(?:\+375|80)\d{9}$"
+    if not re.match(pattern, contact_text): return await message.answer("❌ Ошибка. Пример: +375291234567")
     await state.update_data(contact=contact_text)
     await state.set_state(Booking.confirm)
     data = await state.get_data()
